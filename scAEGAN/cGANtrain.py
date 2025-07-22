@@ -39,15 +39,16 @@ set_session(sess)
 
 
 def create_networks(network_type, generator_params, discriminator_params):
-    netG_A, real_A, fake_B = Generator(network_type=network_type, **generator_params)
-    netG_B, real_B, fake_A = Generator(network_type=network_type, **generator_params)
+    netG_A, real_A, cond_A, fake_B = Generator(network_type=network_type, name_suffix="_A", **generator_params)
+    netG_B, real_B, cond_B, fake_A = Generator(network_type=network_type, name_suffix="_B", **generator_params)
+
 
     netD_A = Discriminator(network_type=network_type, **discriminator_params)
     netD_B = Discriminator(network_type=network_type, **discriminator_params)
 
     discriminators = (netD_A, netD_B)
     generators = (netG_A, netG_B)
-    real_imgs = (real_A, real_B)
+    real_imgs = (real_A, real_B, cond_A, cond_B)
     fake_imgs = (fake_A, fake_B)
 
     return discriminators, generators, real_imgs, fake_imgs
@@ -99,18 +100,19 @@ def create_image_pools(data_pool_size):
 
 
 def create_batch_generators(data_path, train_file, test_file, input_shape, batch_size):
-    train_A = load_data(os.path.join(data_path, train_file + 'A.csv'), input_shape)
-    train_B = load_data(os.path.join(data_path, train_file + 'B.csv'), input_shape)
-    train_batch = minibatchAB(train_A, train_B, batch_size=batch_size)
+    train_A, label_A = load_data(os.path.join(data_path, train_file[0]), input_shape)
+    train_B, label_B = load_data(os.path.join(data_path, train_file[1]), input_shape)
 
-    test_A = load_data(os.path.join(data_path, test_file + 'A.csv'), input_shape)
-    test_B = load_data(os.path.join(data_path, test_file + 'B.csv'), input_shape)
-    test_batch = minibatchAB(test_A, test_B, batch_size=batch_size)
+    train_batch = minibatchAB(train_A, label_A, train_B, label_B, batch_size=batch_size)
+
+    test_A, label_A_test = load_data(os.path.join(data_path, test_file[0]), input_shape)
+    test_B, label_B_test = load_data(os.path.join(data_path, test_file[1]), input_shape)
+    test_batch = minibatchAB(test_A, label_A_test, test_B, label_B_test, batch_size=batch_size)
 
     batches_tuple = train_batch, test_batch
     test_data_tuple = test_A, test_B
 
-    return batches_tuple, test_data_tuple
+    return (train_batch, test_batch), (test_A, test_B, label_A_test, label_B_test)
 
 
 def save_networks(discriminators, generators, save_path):
@@ -155,10 +157,10 @@ def run_train_loop(train_settings,
 
     while epoch_count < how_many_epochs:
         target_label = np.zeros((batch_size, 1))
-        epoch_count, A, B = next(train_batch)
+        epoch_count, A, B, label_A, label_B = next(train_batch)
 
-        tmp_fake_B = netG_A_function([A, 1])[0]
-        tmp_fake_A = netG_B_function([B, 1])[0]
+        tmp_fake_B = netG_A_function([A, label_A])[0]
+        tmp_fake_A = netG_B_function([B, label_B])[0]
 
         if use_data_pooling:
             _fake_B = fake_B_pool.query_over_images(tmp_fake_B)
@@ -168,50 +170,52 @@ def run_train_loop(train_settings,
             _fake_A = tmp_fake_A
 
         if use_wgan:
-            netD_B_train_function.train_on_batch([B, _fake_B], target_label)
-            netD_A_train_function.train_on_batch([A, _fake_A], target_label)
+            netD_B_train_function.train_on_batch([B, _fake_B, label_B], target_label)
+            netD_A_train_function.train_on_batch([A, _fake_A, label_A], target_label)
             clip_weights(netD_B)
             clip_weights(netD_A)
 
             if iteration_count % d_iters == 0:
-                netG_train_function.train_on_batch([A, B], target_label)
+                netG_train_function.train_on_batch([A, B, label_A, label_B], target_label)
         else:
-            netG_train_function.train_on_batch([A, B], target_label)
+            netG_train_function.train_on_batch([A, B, label_A, label_B], target_label)
 
             if iteration_count % discriminator_patience == 0:
-                netD_B_train_function.train_on_batch([B, _fake_B], target_label)
-                netD_A_train_function.train_on_batch([A, _fake_A], target_label)
+                netD_B_train_function.train_on_batch([B, _fake_B, label_B], target_label)
+                netD_A_train_function.train_on_batch([A, _fake_A, label_A], target_label)
+
 
         iteration_count += 1
 
         if print_cost and iteration_count % display_freq == 0:
             target_label = np.zeros((batch_size, 1))
-            epoch_count, A, B = next(test_batch)
 
-            _fake_B = netG_A_function([A, 1])[0]
-            _fake_A = netG_B_function([B, 1])[0]
+            epoch_count, A, B, label_A, label_B = next(test_batch)
+
+            _fake_B = netG_A_function([A, label_A])[0]
+            _fake_A = netG_B_function([B, label_B])[0]
+
+
 
             timecost = (time.time() - time_start) / 30
             print('\nEpoch_count: {}  iter_count: {}  timecost: {}mins'.format(epoch_count,
                                                                                iteration_count,
                                                                                timecost))
-            print('\nDiscriminator A loss: {} \nDiscriminator B loss: {}'.format(
-                netD_A_train_function.evaluate([A, _fake_A], target_label),
-                netD_B_train_function.evaluate([B, _fake_B], target_label)))
-            print('\nGenerator loss: {}'.format(
-                netG_train_function.evaluate([A, B], target_label)))
+            print('\nDiscriminator A loss:', netD_A_train_function.evaluate([A, _fake_A, label_A], target_label))
+            print('Discriminator B loss:', netD_B_train_function.evaluate([B, _fake_B, label_B], target_label))
+            print('Generator loss:', netG_train_function.evaluate([A, B, label_A, label_B], target_label))
 
 
 def process_test_data(generators_tuple, test_data_tuple, save_path):
     netG_A, netG_B = generators_tuple
-    test_A, test_B = test_data_tuple
+    test_A, test_B, label_A_test, label_B_test = test_data_tuple
 
-    outputs = get_generator_outputs(netG_B, netG_A, test_B)
+    outputs = get_generator_outputs(netG_B, netG_A, test_B, label_B_test)
     fake_output, rec_input = outputs
     df_fake_output = pd.DataFrame(fake_output).T
     df_fake_output.to_csv(os.path.join(save_path, 'outdataB.csv'))
 
-    outputs = get_generator_outputs(netG_A, netG_B, test_A)
+    outputs = get_generator_outputs(netG_A, netG_B, test_A, label_A_test)
     fake_output, rec_input = outputs
     df_fake_output = pd.DataFrame(fake_output).T
     df_fake_output.to_csv(os.path.join(save_path, 'outdataA.csv'))
@@ -299,8 +303,8 @@ def main():
     parser.add_argument("--data_pool_size", default=500, type=int)
 
     parser.add_argument("--data_path", default="../inputdata/")
-    parser.add_argument("--train_file", default="domain_")
-    parser.add_argument("--test_file", default="domain_")
+    parser.add_argument("--train_file", nargs=2, type=str, required=True)
+    parser.add_argument("--test_file", nargs=2, type=str, required=True)
 
     parser.add_argument("--save_path", default="../savepath/")
     parser.add_argument("--save_model", default=True, type=bool)

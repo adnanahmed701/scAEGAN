@@ -47,7 +47,9 @@ args = parser.parse_args()
 
 # Input from the domainA (cell by gene matrix)
 
-X = pd.read_csv(args.input_file1,sep=',', index_col=0).transpose()
+X = pd.read_csv(args.input_file1, sep=',', index_col=0)
+X_cond = X.iloc[:, -1]
+X = X.iloc[:, :-1].astype(float)
 
 
 class WeightsOrthogonalityConstraint(Constraint):
@@ -94,15 +96,18 @@ plt.show()
 encoder1 = Model(model1.input, model1.get_layer('bottleneck1').output)
 bottleneck_representation1 = encoder1.predict(X)
 # Saving output of domainA
-domainA_Latent =pd.DataFrame(bottleneck_representation1)
-domainA_Latent.to_csv(args.output_file1,sep=',')
+domainA_Latent = pd.DataFrame(bottleneck_representation1, index=X.index)
+domainA_Latent['condition'] = X_cond.values
+domainA_Latent.to_csv(args.output_file1, sep=',')
 
 
 ##################### Model 2 #############################################################################################################################################################################################
 
 # Input from the domainB (cell by gene matrix)
 
-Y = pd.read_csv(args.input_file2,sep=',', index_col=0).transpose()
+Y = pd.read_csv(args.input_file2, sep=',', index_col=0)
+Y_cond = Y.iloc[:, -1]
+Y = Y.iloc[:, :-1].astype(float)
 
 # Model2
 model2 = Sequential()
@@ -128,5 +133,6 @@ plt.show()
 encoder2 = Model(model2.input, model2.get_layer('bottleneck2').output)
 bottleneck_representation2 = encoder2.predict(Y)
 # Saving output of domainB
-domainB_Latent =pd.DataFrame(bottleneck_representation2)
-domainB_Latent.to_csv(args.output_file2,sep=',')
+domainB_Latent = pd.DataFrame(bottleneck_representation2, index=Y.index)
+domainB_Latent['condition'] = Y_cond.values
+domainB_Latent.to_csv(args.output_file2, sep=',')

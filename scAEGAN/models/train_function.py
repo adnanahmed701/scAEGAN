@@ -7,7 +7,7 @@ from keras.layers import (Input, BatchNormalization, Lambda, Concatenate)
 from .loss import generator_loss, discriminator_loss
 
 # Add this at the top or pass it explicitly if variable
-condition_dim = 10
+condition_dim = 2
 
 def get_train_function(inputs, loss_function, lambda_layer_inputs):
     adam = Adam(lr=0.0005, beta_1=0.5, beta_2=0.999, epsilon=1e-7, decay=0)

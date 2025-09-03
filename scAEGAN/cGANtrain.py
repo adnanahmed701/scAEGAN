@@ -100,19 +100,19 @@ def create_image_pools(data_pool_size):
 
 
 def create_batch_generators(data_path, train_file, test_file, input_shape, batch_size):
-    train_A, label_A = load_data(os.path.join(data_path, train_file[0]), input_shape)
-    train_B, label_B = load_data(os.path.join(data_path, train_file[1]), input_shape)
+    train_A, label_A, ids_A = load_data(os.path.join(data_path, train_file[0]), input_shape)
+    train_B, label_B, ids_B = load_data(os.path.join(data_path, train_file[1]), input_shape)
 
     train_batch = minibatchAB(train_A, label_A, train_B, label_B, batch_size=batch_size)
 
-    test_A, label_A_test = load_data(os.path.join(data_path, test_file[0]), input_shape)
-    test_B, label_B_test = load_data(os.path.join(data_path, test_file[1]), input_shape)
+    test_A, label_A_test, ids_A_test = load_data(os.path.join(data_path, test_file[0]), input_shape)
+    test_B, label_B_test, ids_B_test = load_data(os.path.join(data_path, test_file[1]), input_shape)
     test_batch = minibatchAB(test_A, label_A_test, test_B, label_B_test, batch_size=batch_size)
 
     batches_tuple = train_batch, test_batch
     test_data_tuple = test_A, test_B
 
-    return (train_batch, test_batch), (test_A, test_B, label_A_test, label_B_test)
+    return (train_batch, test_batch), (test_A, test_B, label_A_test, label_B_test, ids_A_test, ids_B_test)
 
 
 def save_networks(discriminators, generators, save_path):
@@ -206,19 +206,115 @@ def run_train_loop(train_settings,
             print('Generator loss:', netG_train_function.evaluate([A, B, label_A, label_B], target_label))
 
 
-def process_test_data(generators_tuple, test_data_tuple, save_path):
+def _jitter(X, sigma=0.05, per_dim_scale=True, rng=None):
+    rng = np.random.default_rng(rng)
+    if per_dim_scale:
+        # scale sigma by per-dimension std (avoid zero std)
+        std = X.std(axis=0, ddof=1)
+        std[std == 0] = 1.0
+        noise = rng.normal(0.0, sigma * std, size=X.shape)
+    else:
+        noise = rng.normal(0.0, sigma, size=X.shape)
+    return X + noise
+
+def _interp_classwise(X, y_onehot, k=5, alpha=0.5, rng=None):
+    """
+    Interpolate each point with a random neighbor from the SAME class (preserves conditional label).
+    y_onehot: shape (n, C), one-hot.
+    """
+    rng = np.random.default_rng(rng)
+    n, d = X.shape
+    y = np.argmax(y_onehot, axis=1)
+    X_new = X.copy()
+    for cls in np.unique(y):
+        idx = np.where(y == cls)[0]
+        if len(idx) < 2:
+            continue
+        nbr_idx = rng.choice(idx, size=len(idx))
+        X_new[idx] = alpha * X[idx] + (1 - alpha) * X[nbr_idx]
+    return X_new
+
+def _upsample_latents(X, Y, ids, target_n, mode="jitter", sigma=0.05, alpha=0.5, k=5, seed=42):
+    """
+    X: (n,d) latent inputs; Y: (n,C) one-hot labels; ids: (n,) strings/ints
+    Returns upsampled (X_out, Y_out, ids_out) with exactly target_n rows.
+    """
+    n = X.shape[0]
+    if target_n <= n:
+        # downsample deterministically for reproducibility
+        return X[:target_n], Y[:target_n], ids[:target_n]
+
+    reps = target_n // n
+    rem  = target_n % n
+
+    X_out = np.vstack([X for _ in range(reps)]) if reps else X[:0]
+    Y_out = np.vstack([Y for _ in range(reps)]) if reps else Y[:0]
+    ids_out = np.concatenate([ids for _ in range(reps)]) if reps else ids[:0]
+
+    if rem:
+        X_out = np.vstack([X_out, X[:rem]])
+        Y_out = np.vstack([Y_out, Y[:rem]])
+        ids_out = np.concatenate([ids_out, ids[:rem]])
+
+    # augment features only (not labels)
+    if mode == "jitter":
+        X_out = _jitter(X_out, sigma=sigma, per_dim_scale=True, rng=seed)
+    elif mode == "interp":
+        X_out = _interp_classwise(X_out, Y_out, k=k, alpha=alpha, rng=seed)
+    elif mode == "none":
+        pass
+    else:
+        raise ValueError("gen_mode must be jitter|interp|none")
+
+    # make new ids for synthetic rows to avoid collisions (optional)
+    # append suffix for rows after the first n
+    if target_n > n:
+        base = np.asarray(ids_out, dtype=object)
+        for i in range(n, target_n):
+            base[i] = f"{base[i]}_aug{i-n+1}"
+        ids_out = base
+
+    return X_out, Y_out, ids_out
+
+
+
+def process_test_data(generators_tuple, test_data_tuple, save_path,
+                      num_generate=0, gen_mode="jitter", sigma=0.05, alpha=0.5, k=5, seed=42):
     netG_A, netG_B = generators_tuple
-    test_A, test_B, label_A_test, label_B_test = test_data_tuple
+    test_A, test_B, label_A_test, label_B_test, ids_A_test, ids_B_test = test_data_tuple
 
-    outputs = get_generator_outputs(netG_B, netG_A, test_B, label_B_test)
-    fake_output, rec_input = outputs
-    df_fake_output = pd.DataFrame(fake_output).T
-    df_fake_output.to_csv(os.path.join(save_path, 'outdataB.csv'))
+    # ---- A note on shapes ----
+    # test_A/test_B are AE latents (n,d), labels are one-hot (n,C), ids are 1D arrays.
+    # If num_generate>0, upsample to that many rows; else, keep original size.
 
-    outputs = get_generator_outputs(netG_A, netG_B, test_A, label_A_test)
-    fake_output, rec_input = outputs
-    df_fake_output = pd.DataFrame(fake_output).T
-    df_fake_output.to_csv(os.path.join(save_path, 'outdataA.csv'))
+    # ===== Translate B -> A (uses netG_A with inputs [B, label_B])
+    if num_generate and num_generate > 0:
+        B_in, yB_in, idsB_in = _upsample_latents(test_B, label_B_test, ids_B_test,
+                                                 target_n=num_generate, mode=gen_mode,
+                                                 sigma=sigma, alpha=alpha, k=k, seed=seed)
+    else:
+        B_in, yB_in, idsB_in = test_B, label_B_test, ids_B_test
+
+    fakeA, recB = get_generator_outputs(netG_B, netG_A, B_in, yB_in)  # returns (fake, recon)
+    dfA = pd.DataFrame(fakeA)
+    dfA.insert(0, 'case_id', idsB_in)
+    dfA['condition'] = np.argmax(yB_in, axis=1).astype(int)
+    dfA.to_csv(os.path.join(save_path, 'outdataB_OS.csv'), index=False)
+
+    # ===== Translate A -> B (uses netG_B with inputs [A, label_A])
+    if num_generate and num_generate > 0:
+        A_in, yA_in, idsA_in = _upsample_latents(test_A, label_A_test, ids_A_test,
+                                                 target_n=num_generate, mode=gen_mode,
+                                                 sigma=sigma, alpha=alpha, k=k, seed=seed)
+    else:
+        A_in, yA_in, idsA_in = test_A, label_A_test, ids_A_test
+
+    fakeB, recA = get_generator_outputs(netG_A, netG_B, A_in, yA_in)
+    dfB = pd.DataFrame(fakeB)
+    dfB.insert(0, 'case_id', idsA_in)
+    dfB['condition'] = np.argmax(yA_in, axis=1).astype(int)
+    dfB.to_csv(os.path.join(save_path, 'outdataA_OS.csv'), index=False)
+
 
 
 def get_networks_params(input_shape, use_dropout, use_batch_norm, use_leaky_relu, use_wgan):
@@ -246,7 +342,14 @@ def train_model(network_parameters,
                 test_data,
                 generator_params,
                 discriminator_params,
-                saving):
+                saving,
+                num_generate,
+                gen_mode,
+                sigma,
+                alpha,
+                k,
+                seed):
+
     network_type, input_shape, use_wgan, data_pool_size = network_parameters
     save_path, save_model = saving
 
@@ -275,7 +378,16 @@ def train_model(network_parameters,
                    batches,
                    discriminators)
 
-    process_test_data(generators, test_data, save_path)
+    process_test_data(
+    generators, test_data, save_path,
+    num_generate=num_generate,
+    gen_mode=gen_mode,
+    sigma=sigma,
+    alpha=alpha,
+    k=k,
+    seed=seed
+)
+
 
     if save_model:
         save_networks(discriminators, generators, save_path)
@@ -310,6 +422,19 @@ def main():
     parser.add_argument("--save_model", default=True, type=bool)
 
     parser.add_argument("--print_cost", default=True, type=bool)
+    parser.add_argument("--num_generate", type=int, default=0,
+                        help="If >0, upsample test inputs to this many rows per domain before translation.")
+    parser.add_argument("--gen_mode", default="jitter", choices=["jitter","interp","none"],
+                        help="How to synthesize extra latent rows.")
+    parser.add_argument("--sigma", type=float, default=0.05,
+                        help="Std for jitter (can be scaled per-dimension).")
+    parser.add_argument("--alpha", type=float, default=0.5,
+                        help="Blend factor for interpolation (0..1).")
+    parser.add_argument("--k", type=int, default=5,
+                        help="Neighbors for interpolation.")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducibility.")
+
 
     args = parser.parse_args()
     
@@ -333,13 +458,19 @@ def main():
                             args.use_leaky_relu, args.use_wgan)
 
     train_model(network_parameters,
-                loss_weights,
-                train_settings,
-                batches,
-                test_data,
-                generator_params,
-                discriminator_params,
-                saving)
+            loss_weights,
+            train_settings,
+            batches,
+            test_data,
+            generator_params,
+            discriminator_params,
+            saving,
+            args.num_generate,
+            args.gen_mode,
+            args.sigma,
+            args.alpha,
+            args.k,
+            args.seed)
 
 
 if __name__ == "__main__":

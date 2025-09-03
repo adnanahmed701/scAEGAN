@@ -3,7 +3,7 @@ from keras.models import Model
 
 from .networks_utils import dense_layer
 
-def Discriminator_cGAN(input_shape=(50,), condition_dim=10, use_wgan=False, use_batch_norm=True, use_leaky_relu=False):
+def Discriminator_cGAN(input_shape=(50,), condition_dim=2, use_wgan=False, use_batch_norm=True, use_leaky_relu=False):
     input_data = Input(shape=input_shape, name="data_input")
     condition = Input(shape=(condition_dim,), name="condition_input")
 

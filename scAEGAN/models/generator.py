@@ -3,7 +3,7 @@ from keras.models import Model
 
 from .networks_utils import residual_dense_block, dense_layer
 
-def Generator_cGAN(input_shape=(50,), condition_dim=10, use_dropout=True, use_batch_norm=True,
+def Generator_cGAN(input_shape=(50,), condition_dim=2, use_dropout=True, use_batch_norm=True,
                    use_leaky_relu=False, name_suffix=""):
     input_data = Input(shape=input_shape, name=f"data_input{name_suffix}")
     condition = Input(shape=(condition_dim,), name=f"condition_input{name_suffix}")

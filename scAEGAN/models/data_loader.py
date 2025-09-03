@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 from keras.utils import to_categorical
 
-def load_data(path, input_shape, label_col=-1, num_classes=10):
+def load_data(path, input_shape, label_col=-1, num_classes=2):
     df = pd.read_csv(path, index_col=0)
 
     # Drop rows with NaN in the label column
@@ -14,10 +14,11 @@ def load_data(path, input_shape, label_col=-1, num_classes=10):
     data = features.values.reshape((-1,) + input_shape)
 
     labels = df.iloc[:, label_col].astype(int).values
-
     labels = to_categorical(labels, num_classes=num_classes)
 
-    return data, labels
+    ids = df.index.to_numpy()
+
+    return data, labels, ids
 
 
 
@@ -53,6 +54,3 @@ def minibatchAB(dataA, labelA, dataB, labelB, batch_size):
         ep1, A, A_labels = next(batchA)
         ep2, B, B_labels = next(batchB)
         yield max(ep1, ep2), A, B, A_labels, B_labels
-
-
-

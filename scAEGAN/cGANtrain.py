@@ -299,7 +299,7 @@ def process_test_data(generators_tuple, test_data_tuple, save_path,
     dfA = pd.DataFrame(fakeA)
     dfA.insert(0, 'case_id', idsB_in)
     dfA['condition'] = np.argmax(yB_in, axis=1).astype(int)
-    dfA.to_csv(os.path.join(save_path, 'outdataB_OS.csv'), index=False)
+    dfA.to_csv(os.path.join(save_path, 'outdataB.csv'), index=False)
 
     # ===== Translate A -> B (uses netG_B with inputs [A, label_A])
     if num_generate and num_generate > 0:
@@ -313,7 +313,7 @@ def process_test_data(generators_tuple, test_data_tuple, save_path,
     dfB = pd.DataFrame(fakeB)
     dfB.insert(0, 'case_id', idsA_in)
     dfB['condition'] = np.argmax(yA_in, axis=1).astype(int)
-    dfB.to_csv(os.path.join(save_path, 'outdataA_OS.csv'), index=False)
+    dfB.to_csv(os.path.join(save_path, 'outdataA.csv'), index=False)
 
 
 
